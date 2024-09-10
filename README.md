@@ -1,4 +1,4 @@
-##File Encryptor & Decryptor
+## File Encryptor & Decryptor
 
 This Python application provides an intuitive user interface for file encryption and decryption using the AES-256 algorithm. It allows users to encrypt files of any type (e.g., PDF, images, videos, audio, documents) and later decrypt them using the same password. The app supports drag-and-drop functionality, ensures security with AES-256 encryption, and offers a clean and user-friendly experience.
 
