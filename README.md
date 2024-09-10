@@ -29,7 +29,7 @@ This Python application provides an intuitive user interface for file encryption
 
 2. Navigate to the project directory:
 
-         cd File-Encryptor-Decryptor
+         cd zephyrn
 
 3. Install the required dependencies:
 
