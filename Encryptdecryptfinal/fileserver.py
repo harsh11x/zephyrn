@@ -9,6 +9,7 @@ import os
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
+import struct
 
 class ZephyrSecuritiesChatServer:
     def __init__(self):
@@ -131,6 +132,10 @@ class ZephyrSecuritiesChatServer:
         encrypt_button = ttk.Button(file_frame, text="Encrypt & Send", command=self.encrypt_and_send_file)
         encrypt_button.pack(side="right", padx=5)
 
+        # Decrypt File Button
+        decrypt_file_button = ttk.Button(file_frame, text="Decrypt File", command=self.decrypt_file)
+        decrypt_file_button.pack(side="right", padx=5)
+
         # Server Control Buttons
         button_frame = ttk.Frame(main_container)
         button_frame.pack(pady=10)
@@ -230,12 +235,23 @@ class ZephyrSecuritiesChatServer:
             if not encrypted_file_path:
                 return
 
-            # Send the encrypted file to all connected clients
+            # Get the file size
+            file_size = os.path.getsize(encrypted_file_path)
+
+            # Send the file size and file data to all connected clients
             with open(encrypted_file_path, 'rb') as f:
                 file_data = f.read()
 
             for client_socket, _ in self.connections:
-                client_socket.send(file_data)
+                # Send message type (FILE)
+                client_socket.send("FILE".encode('utf-8'))
+
+                # Send the file size
+                client_socket.send(str(file_size).encode('utf-8'))
+                client_socket.recv(1024)  # Wait for acknowledgment
+
+                # Send the file data
+                client_socket.sendall(file_data)
 
             self.update_log(f"Sent encrypted file: {os.path.basename(encrypted_file_path)}")
         except Exception as e:
@@ -244,7 +260,13 @@ class ZephyrSecuritiesChatServer:
     def encrypt_file(self, input_path, password):
         """Encrypt a file using AES encryption"""
         try:
-            output_path = input_path + '.enc'
+            # Get the original file extension
+            original_extension = os.path.splitext(input_path)[1]
+
+            # Remove the original extension and append .enc
+            base_name = os.path.splitext(input_path)[0]
+            output_path = base_name + '.enc'
+
             salt = secrets.token_bytes(16)
             iv = secrets.token_bytes(16)
             key = self._derive_key(password, salt)
@@ -252,9 +274,17 @@ class ZephyrSecuritiesChatServer:
             encryptor = cipher.encryptor()
 
             with open(input_path, 'rb') as infile, open(output_path, 'wb') as outfile:
+                # Write salt and IV
                 outfile.write(salt)
                 outfile.write(iv)
 
+                # Write the length of the original extension
+                outfile.write(struct.pack('>I', len(original_extension)))
+
+                # Write the original extension
+                outfile.write(original_extension.encode())
+
+                # Encrypt the file content
                 while chunk := infile.read(1024 * 1024):
                     encrypted_chunk = encryptor.update(chunk)
                     outfile.write(encrypted_chunk)
@@ -266,6 +296,53 @@ class ZephyrSecuritiesChatServer:
         except Exception as e:
             messagebox.showerror("Encryption Error", str(e))
             return None
+
+    def decrypt_file(self):
+        """Decrypt a file using the provided key"""
+        file_path = filedialog.askopenfilename(title="Select File to Decrypt")
+        if not file_path:
+            return
+
+        key = self.key_entry.get().strip()
+        if not key:
+            messagebox.showwarning("Warning", "Please provide an encryption key")
+            return
+
+        try:
+            with open(file_path, 'rb') as infile:
+                # Read salt and IV
+                salt = infile.read(16)
+                iv = infile.read(16)
+
+                # Read the length of the original extension
+                extension_length = struct.unpack('>I', infile.read(4))[0]
+
+                # Read the original extension
+                original_extension = infile.read(extension_length).decode()
+
+                # Derive the key
+                key = self._derive_key(key, salt)
+
+                # Initialize the cipher
+                cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
+                decryptor = cipher.decryptor()
+
+                # Remove the .enc extension and restore the original extension
+                base_name = os.path.splitext(file_path)[0]
+                output_path = base_name + original_extension
+
+                # Decrypt the file content
+                with open(output_path, 'wb') as outfile:
+                    while chunk := infile.read(1024 * 1024):
+                        decrypted_chunk = decryptor.update(chunk)
+                        outfile.write(decrypted_chunk)
+
+                    final_chunk = decryptor.finalize()
+                    outfile.write(final_chunk)
+
+            self.update_log(f"Decrypted file saved as: {output_path}")
+        except Exception as e:
+            messagebox.showerror("Decryption Error", str(e))
 
     def _derive_key(self, password, salt):
         """Derive a secure key using Scrypt KDF"""
@@ -349,15 +426,43 @@ class ZephyrSecuritiesChatServer:
         """Handle individual client communication"""
         try:
             while self.server_running:
-                # Receive encrypted message
-                data = client_socket.recv(1024).decode('utf-8')
-                if not data:
+                # Receive the message type (TEXT or FILE)
+                message_type = client_socket.recv(4).decode('utf-8').strip()
+                if not message_type:
                     break
 
-                # Decrypt and log message
-                decrypted_msg = self.decrypt_message(data, key)
-                if decrypted_msg:
-                    self.update_log(f"Received from {client_address}: {decrypted_msg}")
+                if message_type == "TEXT":
+                    # Handle text message
+                    data = client_socket.recv(1024).decode('utf-8')
+                    if not data:
+                        break
+
+                    # Decrypt and log message
+                    decrypted_msg = self.decrypt_message(data, key)
+                    if decrypted_msg:
+                        self.update_log(f"Received from {client_address}: {decrypted_msg}")
+
+                elif message_type == "FILE":
+                    # Handle file transfer
+                    # Receive the file size first
+                    file_size = int(client_socket.recv(1024).decode('utf-8'))
+                    client_socket.send(b'ACK')  # Send acknowledgment
+
+                    # Receive the file data
+                    received_data = b''
+                    while len(received_data) < file_size:
+                        chunk = client_socket.recv(1024)
+                        if not chunk:
+                            break
+                        received_data += chunk
+
+                    # Save the received file
+                    encrypted_file_path = f"received_file_{client_address[0]}.enc"
+                    with open(encrypted_file_path, 'wb') as f:
+                        f.write(received_data)
+
+                    self.update_log(f"Received encrypted file from {client_address}: {encrypted_file_path}")
+
         except Exception as e:
             self.update_log(f"Client {client_address} disconnected: {e}")
         finally:
@@ -386,6 +491,10 @@ class ZephyrSecuritiesChatServer:
             
             # Broadcast to all connected clients
             for client_socket, _ in self.connections:
+                # Send message type (TEXT)
+                client_socket.send("TEXT".encode('utf-8'))
+
+                # Send the encrypted message
                 client_socket.send(encrypted_msg.encode('utf-8'))
 
             # Log the broadcast
