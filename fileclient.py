@@ -138,6 +138,10 @@ class ModernStyledApp:
         encrypt_button = ttk.Button(file_frame, text="Encrypt & Send", command=self.encrypt_and_send_file)
         encrypt_button.pack(side="right", padx=5)
 
+        # Decrypt Received File Button
+        decrypt_file_button = ttk.Button(file_frame, text="Decrypt Received File", command=self.decrypt_received_file)
+        decrypt_file_button.pack(side="right", padx=5)
+
         # Progress Section
         progress_frame = ttk.Frame(main_container)
         progress_frame.pack(fill="x", padx=10, pady=(10,0))
@@ -231,28 +235,65 @@ class ModernStyledApp:
         """Receive messages from the server and automatically decrypt them."""
         while self.server_running:
             try:
-                data = self.client_socket.recv(1024).decode('utf-8')
-                if not data:
-                    break
+                # Receive the file size first
+                file_size = int(self.client_socket.recv(1024).decode('utf-8'))
+                self.client_socket.send(b'ACK')  # Send acknowledgment
 
-                # Get the key from the input field
-                key = self.key_entry.get().strip()
+                # Receive the file data
+                received_data = b''
+                while len(received_data) < file_size:
+                    chunk = self.client_socket.recv(1024)
+                    if not chunk:
+                        break
+                    received_data += chunk
 
-                if key:
-                    try:
-                        # Decrypt the incoming message
-                        decrypted_message = self.decrypt_message(data, key)
-                        self.update_log(f"Server: {decrypted_message}")
-                    except Exception as e:
-                        # If decryption fails, log the error and display the encrypted message
-                        self.update_log(f"Decryption error: {e}")
-                        self.update_log(f"Server (Encrypted): {data}")
-                else:
-                    # If no key is provided, display the encrypted message
-                    self.update_log(f"Server (Encrypted): {data} (No key provided)")
+                # Save the received file
+                encrypted_file_path = "received_file.enc"
+                with open(encrypted_file_path, 'wb') as f:
+                    f.write(received_data)
+
+                self.update_log(f"Received encrypted file: {encrypted_file_path}")
+
+                # Decrypt the received file
+                self.decrypt_received_file(encrypted_file_path)
+
             except Exception as e:
                 self.update_log(f"Connection error: {e}")
                 break
+
+    def decrypt_received_file(self, encrypted_file_path=None):
+        """Decrypt the received file using the provided key."""
+        if not encrypted_file_path:
+            encrypted_file_path = "received_file.enc"
+            if not os.path.exists(encrypted_file_path):
+                messagebox.showwarning("Warning", "No received file to decrypt")
+                return
+
+        key = self.key_entry.get().strip()
+        if not key:
+            messagebox.showwarning("Warning", "Please provide an encryption key")
+            return
+
+        try:
+            output_path = encrypted_file_path.replace('.enc', '_decrypted')
+            salt = open(encrypted_file_path, 'rb').read(16)
+            iv = open(encrypted_file_path, 'rb').read(16)
+            key = self._derive_key(key, salt)
+            cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
+            decryptor = cipher.decryptor()
+
+            with open(encrypted_file_path, 'rb') as infile, open(output_path, 'wb') as outfile:
+                infile.read(32)  # Skip salt and IV
+                while chunk := infile.read(1024 * 1024):
+                    decrypted_chunk = decryptor.update(chunk)
+                    outfile.write(decrypted_chunk)
+
+                final_chunk = decryptor.finalize()
+                outfile.write(final_chunk)
+
+            self.update_log(f"Decrypted file saved as: {output_path}")
+        except Exception as e:
+            messagebox.showerror("Decryption Error", str(e))
 
     def send_message(self):
         """Send a message to the server."""
