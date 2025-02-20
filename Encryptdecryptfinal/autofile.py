@@ -8,7 +8,7 @@ import time
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
-import hashlib
+import struct
 
 class ModernStyledApp:
     def __init__(self, root):
@@ -240,7 +240,13 @@ class ModernStyledApp:
     def _encrypt_file(self, input_path, password):
         """Robust file encryption with .enc extension."""
         try:
-            output_path = input_path + '.enc'
+            # Get the original file extension
+            original_extension = os.path.splitext(input_path)[1]
+
+            # Remove the original extension and append .enc
+            base_name = os.path.splitext(input_path)[0]
+            output_path = base_name + '.enc'
+
             salt = secrets.token_bytes(16)
             iv = secrets.token_bytes(16)
             key = self._derive_key(password, salt)
@@ -248,9 +254,17 @@ class ModernStyledApp:
             encryptor = cipher.encryptor()
 
             with open(input_path, 'rb') as infile, open(output_path, 'wb') as outfile:
+                # Write salt and IV
                 outfile.write(salt)
                 outfile.write(iv)
 
+                # Write the length of the original extension
+                outfile.write(struct.pack('>I', len(original_extension)))
+
+                # Write the original extension
+                outfile.write(original_extension.encode())
+
+                # Encrypt the file content
                 file_size = os.path.getsize(input_path)
                 bytes_processed = 0
 
@@ -274,16 +288,30 @@ class ModernStyledApp:
     def _decrypt_file(self, input_path, password):
         """Decrypt a file that was previously encrypted with the .enc extension."""
         try:
-            output_path = os.path.splitext(input_path)[0]  # Remove .enc extension
             with open(input_path, 'rb') as infile:
+                # Read salt and IV
                 salt = infile.read(16)
                 iv = infile.read(16)
+
+                # Read the length of the original extension
+                extension_length = struct.unpack('>I', infile.read(4))[0]
+
+                # Read the original extension
+                original_extension = infile.read(extension_length).decode()
+
+                # Derive the key
                 key = self._derive_key(password, salt)
 
+                # Initialize the cipher
                 cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
                 decryptor = cipher.decryptor()
 
-                file_size = os.path.getsize(input_path) - 32  # Exclude salt and iv size
+                # Remove the .enc extension and restore the original extension
+                base_name = os.path.splitext(input_path)[0]
+                output_path = base_name + original_extension
+
+                # Decrypt the file content
+                file_size = os.path.getsize(input_path) - 32 - 4 - extension_length  # Exclude salt, IV, and extension metadata
                 bytes_processed = 0
 
                 with open(output_path, 'wb') as outfile:
