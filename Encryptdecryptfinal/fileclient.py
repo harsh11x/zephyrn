@@ -10,6 +10,7 @@ from cryptography.hazmat.backends import default_backend
 import hashlib
 import socket
 import base64
+import struct
 
 class ModernStyledApp:
     def __init__(self, root):
@@ -138,6 +139,10 @@ class ModernStyledApp:
         encrypt_button = ttk.Button(file_frame, text="Encrypt & Send", command=self.encrypt_and_send_file)
         encrypt_button.pack(side="right", padx=5)
 
+        # Decrypt File Button
+        decrypt_file_button = ttk.Button(file_frame, text="Decrypt File", command=self.decrypt_file)
+        decrypt_file_button.pack(side="right", padx=5)
+
         # Progress Section
         progress_frame = ttk.Frame(main_container)
         progress_frame.pack(fill="x", padx=10, pady=(10,0))
@@ -231,31 +236,60 @@ class ModernStyledApp:
         """Receive messages from the server and automatically decrypt them."""
         while self.server_running:
             try:
-                data = self.client_socket.recv(1024).decode('utf-8')
-                if not data:
+                # Receive the message type (TEXT or FILE)
+                message_type = self.client_socket.recv(4).decode('utf-8').strip()
+                if not message_type:
                     break
 
-                # Get the key from the input field
-                key = self.key_entry.get().strip()
+                if message_type == "TEXT":
+                    # Handle text message
+                    data = self.client_socket.recv(1024).decode('utf-8')
+                    if not data:
+                        break
 
-                if key:
-                    try:
-                        # Decrypt the incoming message
-                        decrypted_message = self.decrypt_message(data, key)
-                        self.update_log(f"Server: {decrypted_message}")
-                    except Exception as e:
-                        # If decryption fails, log the error and display the encrypted message
-                        self.update_log(f"Decryption error: {e}")
-                        self.update_log(f"Server (Encrypted): {data}")
-                else:
-                    # If no key is provided, display the encrypted message
-                    self.update_log(f"Server (Encrypted): {data} (No key provided)")
+                    # Get the key from the input field
+                    key = self.key_entry.get().strip()
+
+                    if key:
+                        try:
+                            # Decrypt the incoming message
+                            decrypted_msg = self.decrypt_message(data, key)
+                            self.update_log(f"Server: {decrypted_msg}")
+                        except Exception as e:
+                            # If decryption fails, log the error and display the encrypted message
+                            self.update_log(f"Decryption error: {e}")
+                            self.update_log(f"Server (Encrypted): {data}")
+                    else:
+                        # If no key is provided, display the encrypted message
+                        self.update_log(f"Server (Encrypted): {data} (No key provided)")
+
+                elif message_type == "FILE":
+                    # Handle file transfer
+                    # Receive the file size first
+                    file_size = int(self.client_socket.recv(1024).decode('utf-8'))
+                    self.client_socket.send(b'ACK')  # Send acknowledgment
+
+                    # Receive the file data
+                    received_data = b''
+                    while len(received_data) < file_size:
+                        chunk = self.client_socket.recv(1024)
+                        if not chunk:
+                            break
+                        received_data += chunk
+
+                    # Save the received file
+                    encrypted_file_path = f"received_file.enc"
+                    with open(encrypted_file_path, 'wb') as f:
+                        f.write(received_data)
+
+                    self.update_log(f"Received encrypted file: {encrypted_file_path}")
+
             except Exception as e:
                 self.update_log(f"Connection error: {e}")
                 break
 
     def send_message(self):
-        """Send a message to the server."""
+        """Send an encrypted message to the server."""
         if not self.client_socket:
             messagebox.showwarning("Warning", "Not connected to server")
             return
@@ -273,8 +307,15 @@ class ModernStyledApp:
         try:
             # Encrypt the message before sending
             encrypted_message = self.encrypt_message(message, key)
+            
+            # Send message type (TEXT)
+            self.client_socket.send("TEXT".encode('utf-8'))
+
+            # Send the encrypted message
             self.client_socket.send(encrypted_message.encode('utf-8'))
-            self.update_log(f"You: {message}")  # Log the plaintext message
+
+            self.update_log(f"You (Encrypted): {encrypted_message}")
+            self.update_log(f"You (Plaintext): {message}")  # Log the plaintext message
             self.message_entry.delete(0, tk.END)
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -328,11 +369,23 @@ class ModernStyledApp:
             if not encrypted_file_path:
                 return
 
-            # Send the encrypted file to the server
+            # Get the file size
+            file_size = os.path.getsize(encrypted_file_path)
+
+            # Send the file size and file data to the server
             with open(encrypted_file_path, 'rb') as f:
                 file_data = f.read()
 
-            self.client_socket.send(file_data)
+            # Send message type (FILE)
+            self.client_socket.send("FILE".encode('utf-8'))
+
+            # Send the file size
+            self.client_socket.send(str(file_size).encode('utf-8'))
+            self.client_socket.recv(1024)  # Wait for acknowledgment
+
+            # Send the file data
+            self.client_socket.sendall(file_data)
+
             self.update_log(f"Sent encrypted file: {os.path.basename(encrypted_file_path)}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -340,7 +393,13 @@ class ModernStyledApp:
     def _encrypt_file(self, input_path, password):
         """Encrypt a file using AES encryption."""
         try:
-            output_path = input_path + '.enc'
+            # Get the original file extension
+            original_extension = os.path.splitext(input_path)[1]
+
+            # Remove the original extension and append .enc
+            base_name = os.path.splitext(input_path)[0]
+            output_path = base_name + '.enc'
+
             salt = secrets.token_bytes(16)
             iv = secrets.token_bytes(16)
             key = self._derive_key(password, salt)
@@ -348,9 +407,17 @@ class ModernStyledApp:
             encryptor = cipher.encryptor()
 
             with open(input_path, 'rb') as infile, open(output_path, 'wb') as outfile:
+                # Write salt and IV
                 outfile.write(salt)
                 outfile.write(iv)
 
+                # Write the length of the original extension
+                outfile.write(struct.pack('>I', len(original_extension)))
+
+                # Write the original extension
+                outfile.write(original_extension.encode())
+
+                # Encrypt the file content
                 while chunk := infile.read(1024 * 1024):
                     encrypted_chunk = encryptor.update(chunk)
                     outfile.write(encrypted_chunk)
@@ -362,6 +429,53 @@ class ModernStyledApp:
         except Exception as e:
             messagebox.showerror("Encryption Error", str(e))
             return None
+
+    def decrypt_file(self):
+        """Decrypt a file using the provided key."""
+        file_path = filedialog.askopenfilename(title="Select File to Decrypt")
+        if not file_path:
+            return
+
+        key = self.key_entry.get().strip()
+        if not key:
+            messagebox.showwarning("Warning", "Please provide an encryption key")
+            return
+
+        try:
+            with open(file_path, 'rb') as infile:
+                # Read salt and IV
+                salt = infile.read(16)
+                iv = infile.read(16)
+
+                # Read the length of the original extension
+                extension_length = struct.unpack('>I', infile.read(4))[0]
+
+                # Read the original extension
+                original_extension = infile.read(extension_length).decode()
+
+                # Derive the key
+                key = self._derive_key(key, salt)
+
+                # Initialize the cipher
+                cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
+                decryptor = cipher.decryptor()
+
+                # Remove the .enc extension and restore the original extension
+                base_name = os.path.splitext(file_path)[0]
+                output_path = base_name + original_extension
+
+                # Decrypt the file content
+                with open(output_path, 'wb') as outfile:
+                    while chunk := infile.read(1024 * 1024):
+                        decrypted_chunk = decryptor.update(chunk)
+                        outfile.write(decrypted_chunk)
+
+                    final_chunk = decryptor.finalize()
+                    outfile.write(final_chunk)
+
+            self.update_log(f"Decrypted file saved as: {output_path}")
+        except Exception as e:
+            messagebox.showerror("Decryption Error", str(e))
 
     def _derive_key(self, password, salt):
         """Derive a secure key using Scrypt KDF."""
