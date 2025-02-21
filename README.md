@@ -39,9 +39,9 @@ This Python application provides an intuitive user interface for file encryption
 
 5. Run the application
 
-         python3 encryptor.py   (To run the encryption tool)
+         python3 fileserver.py   (To run the server file)
 
-         python3 decryptor.py   (To run the decryption tool)
+         python3 fileclient.py   (To run the client file)
 
 ### Usage
 
@@ -49,7 +49,7 @@ This Python application provides an intuitive user interface for file encryption
 
    - Open the encryption application
 
-           python3 encryptor.py
+           python3 autofile.py
 
    - Select the file you want to encrypt by clicking the "Choose File" button.
 
@@ -66,7 +66,7 @@ This Python application provides an intuitive user interface for file encryption
 
    - Open the decryption application
   
-           python3 descryption.py
+           python3 autofile.py
 
    - Select the .enc file that you want to decrypt.
 
